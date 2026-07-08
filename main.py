@@ -1,3 +1,4 @@
+
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -8,50 +9,9 @@ import uuid
 
 app = FastAPI()
 
-ISSUER = "https://idp.exam.local"
-AUDIENCE = "tds-8i4ctb3o.apps.exam.local"
-
-PUBLIC_KEY = """
------BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2okOHspNjgA+2rTLbeuY
-cxiP/hG8C6Sb9iwg3yiLAA4HCnpITcbWCSelbvbYGuc3EbNy4xFyf5Cbj5DHJMID
-EkryOgyd2giIIIBOUBj8S63uGcnRpOBh9NFatfNwheKuzsPuVNldu6A9cNteNpXc
-WyJjG2axVfmq7i6SuKr1JoWYG7xTTAvKPujSl4OtsQfO3h5NepzdfXpr28oNnzfW
-ed+zclR6BcmNNo/WVfJ4xyCLSf0BCOgdTgW6PdaChd1l9VDetJZVEgC5tkyvXsfI
-SI6iyrYbKR0NEBSqq4XkadEjsCs4F1RncsS4LlgniT7GlkL9Mce3b0wGLs9/7ZIX
-dQIDAQAB
------END PUBLIC KEY-----
-"""
-
-class TokenRequest(BaseModel):
-    token: str
-
-@app.post("/verify")
-async def verify_token(request: TokenRequest):
-
-    try:
-
-        payload = jwt.decode(
-            request.token,
-            PUBLIC_KEY,
-            algorithms=["RS256"],
-            audience=AUDIENCE,
-            issuer=ISSUER
-        )
-
-        return {
-            "valid": True,
-            "email": payload.get("email"),
-            "sub": payload.get("sub"),
-            "aud": payload.get("aud")
-        }
-
-    except Exception:
-
-        return JSONResponse(
-            status_code=401,
-            content={"valid": False}
-        )
+# =====================================================
+# Q1 - CORS Aware Metrics API
+# =====================================================
 
 ALLOWED_ORIGIN = "https://dash-mtzp3i.example.com"
 
@@ -66,7 +26,6 @@ app.add_middleware(
 
 @app.middleware("http")
 async def add_headers(request, call_next):
-
     start = time.time()
 
     response = await call_next(request)
@@ -86,8 +45,7 @@ def home():
 
 @app.get("/stats")
 def stats(values: str = Query(...)):
-
-    numbers = [int(x) for x in values.split(",")]
+    numbers = [int(x.strip()) for x in values.split(",")]
 
     count = len(numbers)
     total = sum(numbers)
@@ -98,5 +56,143 @@ def stats(values: str = Query(...)):
         "sum": total,
         "min": min(numbers),
         "max": max(numbers),
-        "mean": total / count
+        "mean": total / count,
     }
+
+
+# =====================================================
+# Q2 - OAuth/OIDC JWT Verification
+# =====================================================
+
+ISSUER = "https://idp.exam.local"
+AUDIENCE = "tds-8i4ctb3o.apps.exam.local"
+
+PUBLIC_KEY = """
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2okOHspNjgA+2rTLbeuY
+cxiP/hG8C6Sb9iwg3yiLAA4HCnpITcbWCSelbvbYGuc3EbNy4xFyf5Cbj5DHJMID
+EkryOgyd2giIIIBOUBj8S63uGcnRpOBh9NFatfNwheKuzsPuVNldu6A9cNteNpXc
+WyJjG2axVfmq7i6SuKr1JoWYG7xTTAvKPujSl4OtsQfO3h5NepzdfXpr28oNnzfW
+ed+zclR6BcmNNo/WVfJ4xyCLSf0BCOgdTgW6PdaChd1l9VDetJZVEgC5tkyvXsfI
+SI6iyrYbKR0NEBSqq4XkadEjsCs4F1RncsS4LlgniT7GlkL9Mce3b0wGLs9/7ZIX
+dQIDAQAB
+-----END PUBLIC KEY-----
+"""
+
+
+class TokenRequest(BaseModel):
+    token: str
+
+
+@app.post("/verify")
+async def verify_token(request: TokenRequest):
+    try:
+        payload = jwt.decode(
+            request.token,
+            PUBLIC_KEY,
+            algorithms=["RS256"],
+            audience=AUDIENCE,
+            issuer=ISSUER,
+        )
+
+        return {
+            "valid": True,
+            "email": payload.get("email"),
+            "sub": payload.get("sub"),
+            "aud": payload.get("aud"),
+        }
+
+    except jwt.InvalidTokenError:
+        return JSONResponse(
+            status_code=401,
+            content={"valid": False},
+        )
+
+
+# =====================================================
+# Q3 - 12 Factor Config Precedence
+# =====================================================
+
+DEFAULTS = {
+    "port": 8000,
+    "workers": 1,
+    "debug": False,
+    "log_level": "info",
+    "api_key": "default-secret-000",
+}
+
+# config.development.yaml layer
+YAML_LAYER = {
+    "debug": True,
+    "log_level": "info",
+    "api_key": "key-h0ufgjer6q",
+}
+
+# .env layer
+DOTENV_LAYER = {
+    "api_key": "key-fi3uh2sodt",
+}
+
+# OS env layer
+OS_ENV_LAYER = {
+    "workers": 6,
+    "debug": True,
+    "log_level": "info",
+    "api_key": "key-pshcgjrmz9",
+}
+
+
+def to_bool(value):
+    if isinstance(value, bool):
+        return value
+
+    return str(value).lower() in (
+        "true",
+        "1",
+        "yes",
+        "on",
+    )
+
+
+def coerce_value(key, value):
+    if key in ("port", "workers"):
+        return int(value)
+
+    if key == "debug":
+        return to_bool(value)
+
+    return str(value)
+
+
+@app.get("/effective-config")
+def effective_config(
+    set: list[str] = Query(default=[]),
+):
+    # defaults -> yaml -> .env -> os env
+    config = DEFAULTS.copy()
+
+    config.update(YAML_LAYER)
+    config.update(DOTENV_LAYER)
+    config.update(OS_ENV_LAYER)
+
+    # CLI overrides (highest precedence)
+    for item in set:
+        if "=" not in item:
+            continue
+
+        key, value = item.split("=", 1)
+
+        config[key] = value
+
+    # type coercion
+    for key in list(config.keys()):
+        config[key] = coerce_value(
+            key,
+            config[key],
+        )
+
+    # mask secret
+    config["api_key"] = "****"
+
+    return config
+
