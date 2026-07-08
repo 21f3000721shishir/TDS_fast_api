@@ -1,111 +1,137 @@
-
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-import jwt
-import time
+
 import uuid
+import time
 
 app = FastAPI()
 
-# =====================================================
-# Q1 - CORS Aware Metrics API
-# =====================================================
-
-ALLOWED_ORIGIN = "https://dash-mtzp3i.example.com"
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[ALLOWED_ORIGIN],
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+TOTAL_ORDERS = 52
+RATE_LIMIT = 20
+WINDOW = 10
 
-@app.middleware("http")
-async def add_headers(request, call_next):
-    start = time.time()
+ORDERS = [
+    {"id": i, "name": f"Order-{i}"}
+    for i in range(1, TOTAL_ORDERS + 1)
+]
 
-    response = await call_next(request)
-
-    process_time = time.time() - start
-
-    response.headers["X-Request-ID"] = str(uuid.uuid4())
-    response.headers["X-Process-Time"] = str(process_time)
-
-    return response
+idempotency_store = {}
+client_requests = {}
 
 
-@app.get("/")
-def home():
-    return {"status": "running"}
+def check_rate_limit(client_id):
+
+    now = time.time()
+
+    requests = client_requests.get(
+        client_id,
+        []
+    )
+
+    requests = [
+        t for t in requests
+        if now - t < WINDOW
+    ]
+
+    if len(requests) >= RATE_LIMIT:
+
+        retry_after = int(
+            WINDOW - (now - requests[0])
+        ) + 1
+
+        return JSONResponse(
+            status_code=429,
+            content={
+                "detail": "rate limit exceeded"
+            },
+            headers={
+                "Retry-After": str(retry_after)
+            }
+        )
+
+    requests.append(now)
+
+    client_requests[client_id] = requests
+
+    return None
 
 
-@app.get("/stats")
-def stats(values: str = Query(...)):
-    numbers = [int(x.strip()) for x in values.split(",")]
+@app.post("/orders", status_code=201)
+def create_order(
+    request: Request,
+    idempotency_key: str = Header(
+        alias="Idempotency-Key"
+    )
+):
 
-    count = len(numbers)
-    total = sum(numbers)
+    client_id = request.headers.get(
+        "X-Client-Id",
+        "anonymous"
+    )
 
-    return {
-        "email": "21f3000721@ds.study.iitm.ac.in",
-        "count": count,
-        "sum": total,
-        "min": min(numbers),
-        "max": max(numbers),
-        "mean": total / count,
+    limited = check_rate_limit(client_id)
+
+    if limited:
+        return limited
+
+    if idempotency_key in idempotency_store:
+        return idempotency_store[
+            idempotency_key
+        ]
+
+    order = {
+        "id": str(uuid.uuid4())
     }
 
+    idempotency_store[
+        idempotency_key
+    ] = order
 
-# =====================================================
-# Q2 - OAuth/OIDC JWT Verification
-# =====================================================
-
-ISSUER = "https://idp.exam.local"
-AUDIENCE = "tds-8i4ctb3o.apps.exam.local"
-
-PUBLIC_KEY = """
------BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2okOHspNjgA+2rTLbeuY
-cxiP/hG8C6Sb9iwg3yiLAA4HCnpITcbWCSelbvbYGuc3EbNy4xFyf5Cbj5DHJMID
-EkryOgyd2giIIIBOUBj8S63uGcnRpOBh9NFatfNwheKuzsPuVNldu6A9cNteNpXc
-WyJjG2axVfmq7i6SuKr1JoWYG7xTTAvKPujSl4OtsQfO3h5NepzdfXpr28oNnzfW
-ed+zclR6BcmNNo/WVfJ4xyCLSf0BCOgdTgW6PdaChd1l9VDetJZVEgC5tkyvXsfI
-SI6iyrYbKR0NEBSqq4XkadEjsCs4F1RncsS4LlgniT7GlkL9Mce3b0wGLs9/7ZIX
-dQIDAQAB
------END PUBLIC KEY-----
-"""
+    return order
 
 
-class TokenRequest(BaseModel):
-    token: str
+@app.get("/orders")
+def list_orders(
+    request: Request,
+    limit: int = 10,
+    cursor: str | None = None
+):
 
+    client_id = request.headers.get(
+        "X-Client-Id",
+        "anonymous"
+    )
 
-@app.post("/verify")
-async def verify_token(request: TokenRequest):
-    try:
-        payload = jwt.decode(
-            request.token,
-            PUBLIC_KEY,
-            algorithms=["RS256"],
-            audience=AUDIENCE,
-            issuer=ISSUER,
+    limited = check_rate_limit(client_id)
+
+    if limited:
+        return limited
+
+    start = 0
+
+    if cursor:
+        start = int(cursor)
+
+    items = ORDERS[
+        start:start + limit
+    ]
+
+    next_cursor = None
+
+    if start + limit < len(ORDERS):
+        next_cursor = str(
+            start + limit
         )
 
-        return {
-            "valid": True,
-            "email": payload.get("email"),
-            "sub": payload.get("sub"),
-            "aud": payload.get("aud"),
-        }
-
-    except jwt.InvalidTokenError:
-        return JSONResponse(
-            status_code=401,
-            content={"valid": False},
-        )
-
-
+    return {
+        "items": items,
+        "next_cursor": next_cursor
+    }
