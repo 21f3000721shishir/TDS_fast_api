@@ -1,7 +1,6 @@
-from fastapi import FastAPI, Header, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
+from fastapi import FastAPI, Header, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import uuid
 import time
 
@@ -27,73 +26,55 @@ idempotency_store = {}
 client_requests = {}
 
 
-def check_rate_limit(client_id):
-
+def check_rate_limit(client_id: str):
     now = time.time()
 
-    requests = client_requests.get(
-        client_id,
-        []
-    )
+    timestamps = client_requests.get(client_id, [])
 
-    requests = [
-        t for t in requests
+    # Keep only requests within the last 10 seconds
+    timestamps = [
+        t for t in timestamps
         if now - t < WINDOW
     ]
 
-    if len(requests) >= RATE_LIMIT:
+    if len(timestamps) >= RATE_LIMIT:
+        retry_after = max(
+            1,
+            int(WINDOW - (now - timestamps[0])) + 1
+        )
 
-        retry_after = int(
-            WINDOW - (now - requests[0])
-        ) + 1
-
-        return JSONResponse(
+        raise HTTPException(
             status_code=429,
-            content={
-                "detail": "rate limit exceeded"
-            },
+            detail="rate limit exceeded",
             headers={
                 "Retry-After": str(retry_after)
             }
         )
 
-    requests.append(now)
-
-    client_requests[client_id] = requests
-
-    return None
+    timestamps.append(now)
+    client_requests[client_id] = timestamps
 
 
 @app.post("/orders", status_code=201)
 def create_order(
     request: Request,
-    idempotency_key: str = Header(
-        alias="Idempotency-Key"
-    )
+    idempotency_key: str = Header(alias="Idempotency-Key")
 ):
-
     client_id = request.headers.get(
         "X-Client-Id",
         "anonymous"
     )
 
-    limited = check_rate_limit(client_id)
-
-    if limited:
-        return limited
+    check_rate_limit(client_id)
 
     if idempotency_key in idempotency_store:
-        return idempotency_store[
-            idempotency_key
-        ]
+        return idempotency_store[idempotency_key]
 
     order = {
         "id": str(uuid.uuid4())
     }
 
-    idempotency_store[
-        idempotency_key
-    ] = order
+    idempotency_store[idempotency_key] = order
 
     return order
 
@@ -104,34 +85,28 @@ def list_orders(
     limit: int = 10,
     cursor: str | None = None
 ):
-
     client_id = request.headers.get(
         "X-Client-Id",
         "anonymous"
     )
 
-    limited = check_rate_limit(client_id)
+    check_rate_limit(client_id)
 
-    if limited:
-        return limited
+    start = int(cursor) if cursor else 0
 
-    start = 0
-
-    if cursor:
-        start = int(cursor)
-
-    items = ORDERS[
-        start:start + limit
-    ]
+    items = ORDERS[start:start + limit]
 
     next_cursor = None
-
     if start + limit < len(ORDERS):
-        next_cursor = str(
-            start + limit
-        )
+        next_cursor = str(start + limit)
 
     return {
         "items": items,
         "next_cursor": next_cursor
     }
+
+
+@app.get("/")
+def home():
+    return {"status": "running"}
+
